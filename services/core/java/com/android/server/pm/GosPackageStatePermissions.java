@@ -22,6 +22,7 @@ import com.android.server.LocalServices;
 import java.util.Objects;
 
 import static android.content.pm.GosPackageStateFlag.ALLOW_ACCESS_TO_OBB_DIRECTORY;
+import static android.content.pm.GosPackageStateFlag.APPS_SCOPES_ENABLED;
 import static android.content.pm.GosPackageStateFlag.BLOCK_NATIVE_DEBUGGING;
 import static android.content.pm.GosPackageStateFlag.BLOCK_NATIVE_DEBUGGING_NON_DEFAULT;
 import static android.content.pm.GosPackageStateFlag.BLOCK_NATIVE_DEBUGGING_SUPPRESS_NOTIF;
@@ -48,6 +49,7 @@ import static android.content.pm.GosPackageStateFlag.USE_HARDENED_MALLOC;
 import static android.content.pm.GosPackageStateFlag.USE_HARDENED_MALLOC_NON_DEFAULT;
 import static com.android.server.pm.GosPackageStatePermission.ALLOW_CROSS_USER_PROFILE_READS;
 import static com.android.server.pm.GosPackageStatePermission.ALLOW_CROSS_USER_PROFILE_WRITES;
+import static com.android.server.pm.GosPackageStatePermission.FIELD_APPS_SCOPES;
 import static com.android.server.pm.GosPackageStatePermission.FIELD_CONTACT_SCOPES;
 import static com.android.server.pm.GosPackageStatePermission.FIELD_PACKAGE_FLAGS;
 import static com.android.server.pm.GosPackageStatePermission.FIELD_STORAGE_SCOPES;
@@ -74,11 +76,13 @@ class GosPackageStatePermissions {
                 SUPPRESS_PLAY_INTEGRITY_API_NOTIF,
         };
 
+        // Self-access: allow compatible scopes and flags, AND apps scope config
         selfAccessPermission = builder()
                 .readFlags(STORAGE_SCOPES_ENABLED, ALLOW_ACCESS_TO_OBB_DIRECTORY,
-                        CONTACT_SCOPES_ENABLED)
+                        CONTACT_SCOPES_ENABLED, APPS_SCOPES_ENABLED)
                 .readFlags(playIntegrityFlags)
                 .readWriteFlag(PLAY_INTEGRITY_API_USED_AT_LEAST_ONCE)
+                .readField(FIELD_APPS_SCOPES)
                 .create();
 
         grantedPermissions = new SparseArray<>();
@@ -103,7 +107,7 @@ class GosPackageStatePermissions {
                 .readField(FIELD_CONTACT_SCOPES)
                 .apply(ksp.contactsProvider, computer);
         builder()
-                .readFlags(STORAGE_SCOPES_ENABLED, CONTACT_SCOPES_ENABLED)
+                .readFlags(STORAGE_SCOPES_ENABLED, CONTACT_SCOPES_ENABLED, APPS_SCOPES_ENABLED)
                 // user profiles are handled by the launcher instance in profile parent user
                 .crossUserPermission(ALLOW_CROSS_USER_PROFILE_READS)
                 .apply(ksp.launcher, computer);
@@ -140,12 +144,14 @@ class GosPackageStatePermissions {
                 FORCE_MEMTAG,
                 FORCE_MEMTAG_SUPPRESS_NOTIF,
                 ENABLE_EXPLOIT_PROTECTION_COMPAT_MODE,
+                APPS_SCOPES_ENABLED
         };
         builder()
                 .readWriteFlags(settingsReadWriteFlags)
                 .readWriteFlags(playIntegrityFlags)
                 .readFlags(STORAGE_SCOPES_ENABLED, CONTACT_SCOPES_ENABLED)
                 .readFields(FIELD_PACKAGE_FLAGS)
+                .readWriteFields(FIELD_APPS_SCOPES)
                 .crossUserPermission(ALLOW_CROSS_USER_PROFILE_READS)
                 .crossUserPermission(ALLOW_CROSS_USER_PROFILE_WRITES)
                 // note that this applies to all packages that run in the android.uid.system sharedUserId,
