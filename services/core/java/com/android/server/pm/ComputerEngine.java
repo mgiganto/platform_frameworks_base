@@ -145,6 +145,8 @@ import com.android.server.pm.parsing.pkg.AndroidPackageUtils;
 import com.android.server.pm.permission.PermissionManagerServiceInternal;
 import com.android.server.pm.permission.PermissionManagerServiceInternal.HotwordDetectionServiceProvider;
 import com.android.server.pm.pkg.AndroidPackage;
+import com.android.server.pm.PackageSetting;
+import com.android.server.pm.SharedUserSetting;
 import com.android.server.pm.pkg.PackageState;
 import com.android.server.pm.pkg.PackageStateInternal;
 import com.android.server.pm.pkg.PackageStateUtils;
@@ -2519,6 +2521,34 @@ public class ComputerEngine implements Computer {
             int callingUid, @Nullable ComponentName component,
             @PackageManager.ComponentType int componentType, int userId, boolean filterUninstall,
             boolean filterArchived) {
+        return shouldFilterApplication(ps, callingUid, component, componentType, userId,
+                filterUninstall, filterArchived, false /* bypassAppsScope */);
+    }
+
+    public final boolean shouldFilterApplication(@Nullable PackageStateInternal ps,
+            int callingUid, @Nullable ComponentName component,
+            @PackageManager.ComponentType int componentType, int userId, boolean filterUninstall,
+            boolean filterArchived, boolean bypassAppsScope) {
+
+        if (!bypassAppsScope) {
+            // --- Apps Scope Hook ---
+            if (ps != null) {
+                try {
+                    int action = AppsScopeManager.checkVisibility(
+                            ps, callingUid, mSettings::getSettingBase);
+                    if (action == AppsScopeManager.ACTION_ALLOW) {
+                        return false; // Force visible
+                    } else if (action == AppsScopeManager.ACTION_DENY) {
+                        return true;  // Force hidden
+                    }
+                    // ACTION_PASS: continue with default code
+                } catch (SecurityException | IllegalArgumentException e) {
+                    Slog.e(TAG, "Apps Scope Hook Error", e);
+                }
+            }
+            // --- End Apps Scope Hook ---
+        }
+
         if (Process.isSdkSandboxUid(callingUid)) {
             int clientAppUid = Process.getAppUidForSdkSandboxUid(callingUid);
             // SDK sandbox should be able to see it's client app
@@ -5547,7 +5577,20 @@ public class ComputerEngine implements Computer {
         enforceCrossUserPermission(callingUid, userId, false /*requireFullPermission*/,
                 false /*checkShell*/, "can package query");
 
-        final PackageStateInternal sourceSetting = getPackageStateInternal(sourcePackageName);
+        // --- HMAC Apps Scope Hook ---
+        String effectiveSourcePackageName = sourcePackageName;
+        boolean bypassAppsScope = false;
+        if (sourcePackageName.endsWith(".unfiltered")) {
+            // Check if a package with this exact name exists.
+            // If it DOES NOT exist, it's a bypass request.
+            if (getPackageStateInternal(sourcePackageName) == null) {
+                effectiveSourcePackageName = sourcePackageName.substring(0, sourcePackageName.length() - ".unfiltered".length());
+                bypassAppsScope = true;
+            }
+        }
+
+        final PackageStateInternal sourceSetting = getPackageStateInternal(effectiveSourcePackageName);
+        // --- End HMAC Apps Scope Hook ---
         final PackageStateInternal[] targetSettings = new PackageStateInternal[targetSize];
         // Throw exception if the caller without the visibility of source package
         boolean throwException =
@@ -5562,13 +5605,15 @@ public class ComputerEngine implements Computer {
         }
         if (throwException) {
             throw new ParcelableException(new PackageManager.NameNotFoundException("Package(s) "
-                    + sourcePackageName + " and/or " + Arrays.toString(targetPackageNames)
+                    + effectiveSourcePackageName + " and/or " + Arrays.toString(targetPackageNames)
                     + " not found."));
         }
 
         final int sourcePackageUid = UserHandle.getUid(userId, sourceSetting.getAppId());
         for (int i = 0; i < targetSize; i++) {
-            results[i] = !shouldFilterApplication(targetSettings[i], sourcePackageUid, userId);
+            results[i] = !shouldFilterApplication(targetSettings[i], sourcePackageUid, /* component */ null,
+                    TYPE_UNKNOWN, userId, /* filterUninstall */ false,
+                    /* filterArchived */ true, bypassAppsScope);
         }
         return results;
     }
