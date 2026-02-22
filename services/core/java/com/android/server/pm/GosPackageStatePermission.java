@@ -25,9 +25,10 @@ class GosPackageStatePermission {
     static final int FIELD_STORAGE_SCOPES = 0;
     static final int FIELD_CONTACT_SCOPES = 1;
     static final int FIELD_PACKAGE_FLAGS = 2;
+    static final int FIELD_APPS_SCOPES = 3;
 
     @IntDef(prefix = "FIELD_", value = {
-            FIELD_STORAGE_SCOPES, FIELD_CONTACT_SCOPES, FIELD_PACKAGE_FLAGS
+            FIELD_STORAGE_SCOPES, FIELD_CONTACT_SCOPES, FIELD_PACKAGE_FLAGS, FIELD_APPS_SCOPES
     })
     @Retention(RetentionPolicy.SOURCE)
     @interface Field {}
@@ -214,6 +215,7 @@ class GosPackageStatePermission {
                 , canReadField(FIELD_PACKAGE_FLAGS) ? ps.packageFlagStorage : default_.packageFlagStorage
                 , canReadField(FIELD_STORAGE_SCOPES) ? ps.storageScopes : default_.storageScopes
                 , canReadField(FIELD_CONTACT_SCOPES) ? ps.contactScopes : default_.contactScopes
+                , canReadField(FIELD_APPS_SCOPES) ? ps.appsScopes : default_.appsScopes
         );
         if (default_.equals(res)) {
             return default_;
@@ -235,6 +237,7 @@ class GosPackageStatePermission {
                 , canWriteField(FIELD_PACKAGE_FLAGS) ? update.packageFlagStorage : current.packageFlagStorage
                 , canWriteField(FIELD_STORAGE_SCOPES) ? update.storageScopes : current.storageScopes
                 , canWriteField(FIELD_CONTACT_SCOPES) ? update.contactScopes : current.contactScopes
+                , canWriteField(FIELD_APPS_SCOPES) ? update.appsScopes : current.appsScopes
         );
         var default_ = GosPackageState.DEFAULT;
         if (default_.equals(res)) {
