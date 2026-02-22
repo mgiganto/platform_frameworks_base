@@ -23,11 +23,19 @@ class GosPackageStatePersistence {
     private static final String ATTR_CONTACT_SCOPES = "contact-scopes";
 
     /** @see Settings#writePackageRestrictions */
-    static void serialize(PackageUserStateInternal packageUserState, TypedXmlSerializer serializer) throws IOException {
+    static void serialize(PackageUserStateInternal packageUserState, String packageName, int userId, TypedXmlSerializer serializer) throws IOException {
         GosPackageState ps = packageUserState.getGosPackageState();
+        boolean enabled = ps.hasFlag(GosPackageStateFlag.APPS_SCOPES_ENABLED);
+
         if (GosPackageState.DEFAULT.equals(ps)) {
+            // Even if default, we call write to ensure any existing files are deleted
+            AppsScopeStorage.write(userId, packageName, null, false);
             return;
         }
+
+        // Write side-car data
+        AppsScopeStorage.write(userId, packageName, ps.appsScopes, enabled);
+
         serializer.startTag(null, TAG_GOS_PACKAGE_STATE);
         serializeInner(ps, serializer);
         serializer.endTag(null, TAG_GOS_PACKAGE_STATE);
@@ -56,7 +64,7 @@ class GosPackageStatePersistence {
         }
     }
 
-    static GosPackageState deserialize(TypedXmlPullParser parser) throws XmlPullParserException {
+    static GosPackageState deserialize(TypedXmlPullParser parser, String packageName, int userId) throws XmlPullParserException {
         long flagStorage1 = 0L;
         long packageFlagStorage = 0L;
         byte[] storageScopes = null;
@@ -77,7 +85,11 @@ class GosPackageStatePersistence {
                     Slog.e(TAG, "deserialize: unknown attribute " + attr);
             }
         }
-        return new GosPackageState(flagStorage1, packageFlagStorage, storageScopes, contactScopes);
+
+        // Apps scope config is exclusively read from JSON sidecar files
+        byte[] appsScopes = AppsScopeStorage.read(userId, packageName);
+
+        return new GosPackageState(flagStorage1, packageFlagStorage, storageScopes, contactScopes, appsScopes);
     }
 
     // Compatibility with legacy serialized GosPackageState.
@@ -91,7 +103,7 @@ class GosPackageStatePersistence {
         long packageFlagStorage = parser.getAttributeLong(null, "GrapheneOS-package-flags", 0L);
         byte[] storageScopes = parser.getAttributeBytesHex(null, "GrapheneOS-storage-scopes", null);
         byte[] contactScopes = parser.getAttributeBytesHex(null, "GrapheneOS-contact-scopes", null);
-        return new GosPackageState(flagStorage1, packageFlagStorage, storageScopes, contactScopes);
+        return new GosPackageState(flagStorage1, packageFlagStorage, storageScopes, contactScopes, null);
     }
 
     private static long migrateLegacyFlags(int flags) {
