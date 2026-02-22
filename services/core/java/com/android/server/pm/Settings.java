@@ -2047,7 +2047,7 @@ public final class Settings implements Watchable, Snappable, ResilientAtomicFile
                                     archiveState = parseArchiveState(parser);
                                     break;
                                 case GosPackageStatePersistence.TAG_GOS_PACKAGE_STATE:
-                                    gosPackageState = GosPackageStatePersistence.deserialize(parser);
+                                    gosPackageState = GosPackageStatePersistence.deserialize(parser, name, userId);
                                     break;
                                 default:
                                     Slog.wtf(TAG, "Unknown tag " + parser.getName() + " under tag "
@@ -2501,7 +2501,8 @@ public final class Settings implements Watchable, Snappable, ResilientAtomicFile
                                     ustate.getMinAspectRatio());
                         }
 
-                        GosPackageStatePersistence.serialize(ustate, serializer);
+                        Slog.d("AppsScope", "serialize: pkg=" + pkg.getPackageName() + " user=" + userId);
+                        GosPackageStatePersistence.serialize(ustate, pkg.getPackageName(), userId, serializer);
 
                         if (ustate.isSuspended()) {
                             for (int i = 0; i < ustate.getSuspendParams().size(); i++) {
