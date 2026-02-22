@@ -16,6 +16,7 @@ import android.os.ShellCommand;
 import android.os.UserHandle;
 import android.util.Slog;
 
+import android.app.AppsScope;
 import com.android.internal.pm.parsing.pkg.AndroidPackageInternal;
 import com.android.internal.pm.pkg.component.ParsedUsesPermission;
 import com.android.server.LocalServices;
@@ -25,7 +26,10 @@ import com.android.server.pm.pkg.PackageUserStateInternal;
 import com.android.server.pm.pkg.SharedUserApi;
 import com.android.server.utils.Slogf;
 
+import java.io.PrintWriter;
+import java.lang.reflect.Field;
 import java.util.List;
+import java.util.StringJoiner;
 
 import static android.content.pm.GosPackageState.*;
 import static com.android.server.pm.GosPackageStateUtils.parseFlag;
@@ -123,13 +127,57 @@ public class GosPackageStatePmHooks {
             SharedUserSetting sharedUser = pm.mSettings.getSharedUserSettingLPr(packageSetting);
 
             if (sharedUser != null) {
-                List<AndroidPackage> sharedPkgs = sharedUser.getPackages();
+                byte[] targetConfigBytes = updatedGosPs.appsScopes;
+                AppsScope targetConfig = null;
+                if (targetConfigBytes != null) {
+                    targetConfig = AppsScope.deserialize(targetConfigBytes);
+                }
 
-                // see GosPackageState doc
+                // Precompute the byte array for a peer WITH restrictSelf enabled
+                AppsScope.Builder builderWithRestrictSelf = (targetConfig != null) ?
+                        new AppsScope.Builder(targetConfig) :
+                        new AppsScope.Builder();
+                builderWithRestrictSelf.addFlag(AppsScope.FLAG_RESTRICT_SELF);
+                byte[] newPeerConfigBytesWithRestrictSelf = AppsScope.serialize(builderWithRestrictSelf.build());
+
+                // Precompute the byte array for a peer WITHOUT restrictSelf enabled
+                byte[] newPeerConfigBytesWithoutRestrictSelf;
+                if (targetConfig == null) {
+                    newPeerConfigBytesWithoutRestrictSelf = null;
+                } else {
+                    AppsScope.Builder builderWithoutRestrictSelf = new AppsScope.Builder(targetConfig);
+                    builderWithoutRestrictSelf.clearFlag(AppsScope.FLAG_RESTRICT_SELF);
+                    newPeerConfigBytesWithoutRestrictSelf = AppsScope.serialize(builderWithoutRestrictSelf.build());
+                }
+
+                List<AndroidPackage> sharedPkgs = sharedUser.getPackages();
                 for (AndroidPackage sharedPkg : sharedPkgs) {
                     PackageSetting sharedPkgSetting = pm.mSettings.getPackageLPr(sharedPkg.getPackageName());
                     if (sharedPkgSetting != null) {
-                        sharedPkgSetting.setGosPackageState(userId, updatedGosPs);
+                        GosPackageState psToSet;
+
+                        if (sharedPkg.getPackageName().equals(packageName)) {
+                            psToSet = updatedGosPs;
+                        } else {
+                            GosPackageState peerCurrentPs = sharedPkgSetting.getUserStateOrDefault(userId).getGosPackageState();
+
+                            // Use cached AppsScope so we avoid JSON deserialization overhead inside the pm.mLock loop
+                            AppsScope peerConfig = peerCurrentPs.getAppsScope();
+                            boolean peerRestrictSelf = (peerConfig != null) &&
+                                    ((peerConfig.flags & AppsScope.FLAG_RESTRICT_SELF) != 0);
+
+                            byte[] newPeerConfigBytes = peerRestrictSelf ?
+                                    newPeerConfigBytesWithRestrictSelf : newPeerConfigBytesWithoutRestrictSelf;
+
+                            psToSet = new GosPackageState(
+                                    updatedGosPs.flagStorage1,
+                                    updatedGosPs.packageFlagStorage,
+                                    updatedGosPs.storageScopes,
+                                    updatedGosPs.contactScopes,
+                                    newPeerConfigBytes
+                            );
+                        }
+                        sharedPkgSetting.setGosPackageState(userId, psToSet);
                     }
                 }
             } else {
@@ -138,6 +186,7 @@ public class GosPackageStatePmHooks {
 
             // will invalidate app-side caches (GosPackageState.sCache)
             pm.scheduleWritePackageRestrictions(userId);
+            android.content.pm.PackageManager.invalidatePackageInfoCache();
         }
 
         if ((editorFlags & EDITOR_FLAG_KILL_UID_AFTER_APPLY) != 0) {
@@ -355,6 +404,30 @@ public class GosPackageStatePmHooks {
                     ed.setStorageScopes(getByteArrArg(cmd));
                 case "set-contact-scopes" ->
                     ed.setContactScopes(getByteArrArg(cmd));
+                case "set-apps-scopes-config" ->
+                    ed.setAppsScopeConfig(getByteArrArg(cmd));
+                case "add-apps-scopes-flag", "clear-apps-scopes-flag", "add-apps-scopes-package-allow", "add-apps-scopes-package-deny", "clear-apps-scopes-package", "dump-apps-scopes" -> {
+                    byte[] data = ed.getAppsScopeConfig();
+                    AppsScope config = AppsScope.deserialize(data);
+                    AppsScope.Builder b = config != null ?
+                            new AppsScope.Builder(config) :
+                            new AppsScope.Builder();
+
+                    String val = "dump-apps-scopes".equals(arg) ? null : cmd.getNextArgRequired();
+
+                    switch (arg) {
+                        case "add-apps-scopes-flag" -> b.addFlag(parseAppsScopeFlag(val));
+                        case "clear-apps-scopes-flag" -> b.clearFlag(parseAppsScopeFlag(val));
+                        case "add-apps-scopes-package-allow" -> b.addPackage(val, true);
+                        case "add-apps-scopes-package-deny" -> b.addPackage(val, false);
+                        case "clear-apps-scopes-package" -> b.removePackage(val);
+                        case "dump-apps-scopes" -> {
+                            dumpAppsScope(cmd.getOutPrintWriter(), packageName, userId, ed.getFlags(), ed.getPackageFlags(), b.build());
+                            continue;
+                        }
+                    }
+                    ed.setAppsScopeConfig(AppsScope.serialize(b.build()));
+                }
                 case "set-kill-uid-after-apply" ->
                     ed.setKillUidAfterApply(Boolean.parseBoolean(cmd.getNextArgRequired()));
                 case "set-notify-uid-after-apply" ->
@@ -365,6 +438,65 @@ public class GosPackageStatePmHooks {
                     throw new IllegalArgumentException(arg);
             }
         }
+    }
+
+    private static void dumpAppsScope(PrintWriter pw, String packageName, int userId, long flags, long packageFlags, AppsScope config) {
+        pw.println("Package: " + packageName + ", User: " + userId);
+        pw.println("Flags: " + flagStorageToString(flags));
+        pw.println("Package Flags: " + packageFlags);
+        if (config != null) {
+            pw.println("Apps Scope Config:");
+            pw.println("  Flags: " + appsScopeFlagsToString(config.flags));
+            if (!config.specificRules.isEmpty()) {
+                pw.println("  Specific Rules:");
+                for (var entry : config.specificRules.entrySet()) {
+                    pw.println("    " + entry.getKey() + ": " + (entry.getValue() ? "ALLOW" : "DENY"));
+                }
+            }
+        } else {
+            pw.println("Apps Scope Config: null");
+        }
+    }
+
+    private static int parseAppsScopeFlag(String s) {
+        if (Character.isDigit(s.charAt(0))) {
+            return Integer.parseInt(s);
+        }
+        try {
+            return AppsScope.class.getDeclaredField(s).getInt(null);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalArgumentException(e);
+        }
+    }
+
+    private static String flagStorageToString(long flags) {
+        StringJoiner sj = new StringJoiner(", ");
+        for (Field field : GosPackageStateFlag.class.getDeclaredFields()) {
+            if (field.getType() == int.class) {
+                try {
+                    int bit = field.getInt(null);
+                    if ((flags & (1L << bit)) != 0) {
+                        sj.add(field.getName());
+                    }
+                } catch (IllegalAccessException ignored) {}
+            }
+        }
+        return sj.length() > 0 ? sj.toString() : "0";
+    }
+
+    private static String appsScopeFlagsToString(int flags) {
+        StringJoiner sj = new StringJoiner(", ");
+        for (Field field : AppsScope.class.getDeclaredFields()) {
+            if (field.getName().startsWith("FLAG_") && field.getType() == int.class) {
+                try {
+                    int bitValue = field.getInt(null);
+                    if ((flags & bitValue) != 0) {
+                        sj.add(field.getName());
+                    }
+                } catch (IllegalAccessException ignored) {}
+            }
+        }
+        return sj.length() > 0 ? sj.toString() : "0";
     }
 
     @Nullable
